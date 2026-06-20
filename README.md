@@ -23,12 +23,15 @@ ConsoleWrite("Send this Hex string to your server: " & $encryptedHex & @CRLF)
 Func _CryptSec($sText, $bEncrypt = True)
    Local $result = ""
    If $bEncrypt Then
+      ; Appends "END" to verify integrity after decryption
       Local $plaintext = $sText & "END"
       Local $ciphertext = _Crypt_EncryptData($plaintext, $SECRET_KEY, $CALG_3DES)
+      ; Convert binary to readable Hex
       $result = Hex($ciphertext)
    Else
       Local $raw = Binary("0x" & $sText)
       Local $decryptedBinary = _Crypt_DecryptData($raw, $SECRET_KEY, $CALG_3DES)
+      ; Convert back to string and remove the "END" marker
       $result = StringTrimRight(BinaryToString($decryptedBinary), 3)
    EndIf
    Return $result
@@ -56,33 +59,61 @@ if ($decryptedData !== false) {
 
 // --- INTERNAL FUNCTION ---
 function decrypt_data($hexText, $secretKey) {
+    // 1. Clean up '0x' prefix if present
     if (isset($hexText[1]) && $hexText[0] === '0' && ($hexText[1] === 'x' || $hexText[1] === 'X')) {
         $hexText = substr($hexText, 2);
     }
-    $len = strlen($hexText);
-    if ($len < 16 || ($len & 1) || !ctype_xdigit($hexText)) return false;
-    $rawBinary = hex2bin($hexText);
-    if ($rawBinary === false) return false;
 
+    // 2. Validate Hex format (must be even length and contain only 0-9, A-F)
+    $len = strlen($hexText);
+    if ($len < 16 || ($len & 1) || !ctype_xdigit($hexText)) {
+        return false;
+    }
+
+    $rawBinary = hex2bin($hexText);
+    if ($rawBinary === false) {
+        return false;
+    }
+
+    // 3. Derive the 24-byte 3DES key (cached for maximum performance)
     static $keyCache = [], $lastKey = null, $lastDerivedKey = null;
+    
     if ($secretKey !== $lastKey) {
         if (!isset($keyCache[$secretKey])) {
             $baseHash = md5($secretKey, true);
             static $IPAD16, $OPAD16, $IPAD48, $OPAD48;
             if ($IPAD16 === null) {
-                $IPAD16 = str_repeat("\x36", 16); $OPAD16 = str_repeat("\x5C", 16);
-                $IPAD48 = str_repeat("\x36", 48); $OPAD48 = str_repeat("\x5C", 48);
+                $IPAD16 = str_repeat("\x36", 16);
+                $OPAD16 = str_repeat("\x5C", 16);
+                $IPAD48 = str_repeat("\x36", 48);
+                $OPAD48 = str_repeat("\x5C", 48);
             }
-            $keyCache[$secretKey] = substr(md5(($baseHash ^ $IPAD16) . $IPAD48, true) . md5(($baseHash ^ $OPAD16) . $OPAD48, true), 0, 24);
+            $keyCache[$secretKey] = substr(
+                md5(($baseHash ^ $IPAD16) . $IPAD48, true) .
+                md5(($baseHash ^ $OPAD16) . $OPAD48, true),
+                0,
+                24
+            );
         }
-        $lastKey = $secretKey; $lastDerivedKey = $keyCache[$secretKey];
+        $lastKey = $secretKey;
+        $lastDerivedKey = $keyCache[$secretKey];
     }
 
-    $decrypted = openssl_decrypt($rawBinary, 'des-ede3-cbc', $lastDerivedKey, OPENSSL_RAW_DATA, "\0\0\0\0\0\0\0\0");
+    // 4. Decrypt using OpenSSL (Zero IV)
+    $decrypted = openssl_decrypt(
+        $rawBinary,
+        'des-ede3-cbc',
+        $lastDerivedKey,
+        OPENSSL_RAW_DATA,
+        "\0\0\0\0\0\0\0\0"
+    );
 
-    if ($decrypted === false || strlen($decrypted) < 3 || substr($decrypted, -3) !== 'END') {
+    // 5. Final check: Must end with "END"
+    if ($decrypted === false || strlen($decrypted) < 3 || $decrypted[-1] !== 'D' || $decrypted[-2] !== 'N' || $decrypted[-3] !== 'E') {
         return false;
     }
+
+    // Strip "END" and return the original message
     return substr($decrypted, 0, -3);
 }
 ```
